@@ -1,0 +1,32 @@
+# Local model weights and generated experiment artifacts
+models/*
+!models/.gitkeep
+training_results/
+results/
+
+# Vendored third-party source; install required packages from requirements.txt
+peft/
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp

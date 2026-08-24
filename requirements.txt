@@ -1,0 +1,9 @@
+numpy>=1.24
+openai>=1.0
+fschat>=0.2.36
+tenacity>=8.2
+torch>=2.1
+tqdm>=4.66
+transformers>=4.43,<5
+-e peft
+-e mt_bench
