@@ -1,11 +1,6 @@
-# Local model weights and generated experiment artifacts
+# Local model weights
 models/*
 !models/.gitkeep
-training_results/
-results/
-
-# Vendored third-party source; install required packages from requirements.txt
-peft/
 
 # Python caches and environments
 __pycache__/

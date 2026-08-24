@@ -5,14 +5,14 @@ import uuid
 
 from openai import OpenAI
 
-# tqdm 可选，没装也能跑
+# tqdm is optional; the script also works without it.
 try:
     from tqdm import tqdm
 except Exception:
     def tqdm(x, **kwargs):
         return x
 
-# 配置
+# Configuration.
 MODEL = os.getenv("JUDGE_MODEL", "gpt-4o")
 QUESTION_FILE = "data/mt_bench/question.jsonl"
 OUT_FILE = f"data/mt_bench/reference_answer/{MODEL}_1.jsonl"
@@ -30,7 +30,7 @@ if OPENAI_BASE_URL:
     client_kwargs["base_url"] = OPENAI_BASE_URL
 client = OpenAI(**client_kwargs)
 
-# 与 MT-bench 一致的温度配置
+# Temperature configuration consistent with MT-Bench.
 temperature_config = {
     "writing": 0.7,
     "roleplay": 0.7,
@@ -62,7 +62,7 @@ def chat(messages, temperature, max_retry=6):
             time.sleep(wait)
     raise RuntimeError("Failed to get completion after retries")
 
-# 读取问题
+# Load questions.
 with open(QUESTION_FILE, "r") as f:
     questions = [json.loads(line) for line in f if line.strip()]
 

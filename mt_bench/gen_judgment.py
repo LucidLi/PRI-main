@@ -1,16 +1,16 @@
-﻿"""本脚本用于对模型答案执行自动评判（single / pairwise）。
+﻿"""Automatically judge model answers in single or pairwise mode.
 
-典型用法：
-python gen_judgment.py --model-list <模型列表> --parallel <并发数> --mode <single|pairwise-baseline|pairwise-all>
+Example:
+python gen_judgment.py --model-list <model_list> --parallel <workers> --mode <single|pairwise-baseline|pairwise-all>
 
-输入：
-1) 题目文件 data/<bench_name>/question.jsonl
-2) 候选答案目录 data/<bench_name>/model_answer
-3) 参考答案目录 data/<bench_name>/reference_answer
-4) 评审提示词 data/judge_prompts.jsonl
+Inputs:
+1) Question file: data/<bench_name>/question.jsonl
+2) Candidate-answer directory: data/<bench_name>/model_answer
+3) Reference-answer directory: data/<bench_name>/reference_answer
+4) Judge prompts: data/judge_prompts.jsonl
 
-输出：
-1) 评审结果文件 data/<bench_name>/model_judgment/*.jsonl
+Output:
+1) Judgment file: data/<bench_name>/model_judgment/*.jsonl
 """
 
 import argparse
@@ -22,13 +22,13 @@ import numpy as np
 from tqdm import tqdm
 
 
-# 兼容补丁：适配 openai>=1.x 的调用方式，并替换 FastChat 内部旧接口。
+# Compatibility patch for openai>=1.x and the legacy FastChat interface.
 try:
     import openai
     from openai import OpenAI
     import fastchat.llm_judge.common as _fc_common
 
-    # OpenAI 访问配置
+    # OpenAI client configuration.
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
 
@@ -36,34 +36,28 @@ try:
     openai_base_url = OPENAI_BASE_URL
 
     if not openai_key:
-        raise ValueError("OPENAI_API_KEY 未设置")
+        raise ValueError("OPENAI_API_KEY is not set.")
 
-    # 兼容旧版异常命名：fastchat 旧逻辑可能访问 openai.error.OpenAIError。
+    # Provide the legacy exception namespace expected by older FastChat code.
     if not hasattr(openai, "error"):
         class _OpenAIErrorWrapper:
             OpenAIError = openai.OpenAIError
 
         openai.error = _OpenAIErrorWrapper
 
-    # _openai_client：OpenAI 客户端实例。
+    # OpenAI client instance.
     _client_kwargs = {"api_key": openai_key}
     if openai_base_url:
         _client_kwargs["base_url"] = openai_base_url
     _openai_client = OpenAI(**_client_kwargs)
 
     def _chat_compeletion_openai(model, conv, temperature=0, max_tokens=2048):
-        """供 FastChat 调用的 chat completion 兼容函数。
+        """Compatibility wrapper for FastChat chat-completion calls.
 
-        输入：
-        - model: str，评审模型名（如 gpt-4o）。
-        - conv: FastChat 对话对象，可转 OpenAI messages。
-        - temperature: float，采样温度。
-        - max_tokens: int，保留参数；当前调用保持与原逻辑一致，不强制传入。
-
-        输出：
-        - str，模型回复文本（choices[0].message.content）。
+        The conversation object is converted to OpenAI messages and the
+        generated text is returned.
         """
-        # messages：List[Dict[str, str]]，OpenAI Chat API 的标准消息格式。
+        # Standard OpenAI Chat API message format.
         messages = conv.to_openai_api_messages()
 
         resp = _openai_client.chat.completions.create(
@@ -74,9 +68,9 @@ try:
 
         return resp.choices[0].message.content
 
-    # 用兼容函数覆盖 fastchat 内部同名入口。
+    # Replace the matching FastChat entry point with the compatibility wrapper.
     _fc_common.chat_compeletion_openai = _chat_compeletion_openai
-    print("[PATCH] OpenAI 兼容补丁已加载")
+    print("[PATCH] OpenAI compatibility patch loaded")
 except Exception as e:
     print("[PATCH ERROR]", e)
 
@@ -97,43 +91,30 @@ from fastchat.llm_judge.common import (
 
 
 def make_match(questions, models, model_answers, judge, baseline_model, ref_answers=None, multi_turn=False):
-    """构建 pairwise-baseline 模式下的对战列表。
+    """Build matches for pairwise comparison against a baseline model.
 
-    输入：
-    - questions: List[Dict]，题目列表。
-    - models: List[str]，待评测模型名列表。
-    - model_answers: Dict[str, Dict[qid, answer]]，模型答案映射。
-    - judge: Judge，评审器实例。
-    - baseline_model: str，基线模型名。
-    - ref_answers: Dict 或 None，参考答案映射（数学类会使用）。
-    - multi_turn: bool，是否仅处理双轮题。
-
-    输出：
-    - List[MatchPair]。
-
-    过程：
-    - 每个问题中，每个模型与 baseline_model 组成一场对战。
-    - 若模型名与 baseline 相同则跳过。
-    - 若提供 ref_answers 则写入 ref_answer 字段。
+    Each model is compared with the baseline for every question. Matches with
+    the same model name as the baseline are skipped, and reference answers are
+    attached when provided.
     """
-    # matches：List[MatchPair]
+    # List of MatchPair objects.
     matches = []
 
     for q in questions:
-        # multi_turn=True 时仅接受恰好两轮的题目。
+        # In multi-turn mode, accept only questions with exactly two turns.
         if multi_turn and len(q["turns"]) != 2:
             continue
 
         for i in range(len(models)):
-            q_id = q["question_id"]  # 类型：int 或 str（取决于数据文件）
-            m_1 = models[i]           # 待评模型名，类型：str
-            m_2 = baseline_model      # 基线模型名，类型：str
+            q_id = q["question_id"]  # int or str, depending on the data file.
+            m_1 = models[i]           # Candidate model name.
+            m_2 = baseline_model      # Baseline model name.
 
             if m_1 == m_2:
                 continue
 
-            a_1 = model_answers[m_1][q_id]  # 模型1答案对象
-            a_2 = model_answers[baseline_model][q_id]  # 基线答案对象
+            a_1 = model_answers[m_1][q_id]  # Candidate model answer record.
+            a_2 = model_answers[baseline_model][q_id]  # Baseline answer record.
 
             if ref_answers is not None:
                 ref = ref_answers[judge.model_name][q_id]
@@ -164,11 +145,10 @@ def make_match_all_pairs(
     ref_answers=None,
     multi_turn=False,
 ):
-    """构建 pairwise-all 模式下的全模型两两对战列表。
+    """Build all pairwise matches among the supplied models.
 
-    输入/输出与 make_match 类似，不同点：
-    - 不依赖 baseline_model。
-    - 在 models 内做组合 C(n,2)。
+    Unlike ``make_match``, this function does not require a baseline model and
+    creates all C(n, 2) model pairs.
     """
     matches = []
 
@@ -214,13 +194,10 @@ def make_match_single(
     ref_answers=None,
     multi_turn=False,
 ):
-    """构建 single 模式下的评分任务列表。
+    """Build single-answer scoring tasks.
 
-    输入：
-    - 与 make_match 基本一致；baseline_model 参数保留但不使用。
-
-    输出：
-    - List[MatchSingle]。
+    The arguments are similar to ``make_match``; ``baseline_model`` is kept
+    for interface compatibility but is not used.
     """
     matches = []
 
@@ -243,15 +220,10 @@ def make_match_single(
 
 
 def make_judge_pairwise(judge_model, judge_prompts):
-    """构建 pairwise 模式所需的 4 类评审器。
+    """Build the four judge variants required for pairwise evaluation.
 
-    输入：
-    - judge_model: str，评审模型名。
-    - judge_prompts: Dict[str, prompt_template]，提示词模板映射。
-
-    输出：
-    - Dict[str, Judge]，键包括：
-      default / math / default-mt / math-mt。
+    The returned mapping contains default, math, default-mt, and math-mt
+    judges.
     """
     judges = {}
     judges["default"] = Judge(judge_model, judge_prompts["pair-v2"])
@@ -267,7 +239,7 @@ def make_judge_pairwise(judge_model, judge_prompts):
 
 
 def make_judge_single(judge_model, judge_prompts):
-    """构建 single 模式所需的 4 类评审器。"""
+    """Build the four judge variants required for single-answer evaluation."""
     judges = {}
     judges["default"] = Judge(judge_model, judge_prompts["single-v1"])
     judges["math"] = Judge(judge_model, judge_prompts["single-math-v1"], ref_based=True)
@@ -284,11 +256,11 @@ def make_judge_single(judge_model, judge_prompts):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    # 基本路径参数
-    parser.add_argument("--bench-name", type=str, default="mt_bench", help="题库名称。")
-    parser.add_argument("--judge-file", type=str, default="data/judge_prompts.jsonl", help="评审提示词文件。")
+    # Basic path parameters.
+    parser.add_argument("--bench-name", type=str, default="mt_bench", help="Benchmark name.")
+    parser.add_argument("--judge-file", type=str, default="data/judge_prompts.jsonl", help="Judge prompt file.")
 
-    # 评审模型与模式参数
+    # Judge model and mode parameters.
     parser.add_argument("--judge-model", type=str, default="gpt-4o")
     parser.add_argument("--baseline-model", type=str, default="gpt-3.5-turbo")
     parser.add_argument(
@@ -296,24 +268,24 @@ if __name__ == "__main__":
         type=str,
         default="single",
         help=(
-            "评测模式："
-            "pairwise-baseline=与基线两两比较；"
-            "pairwise-all=全部两两比较；"
-            "single=单答案评分。"
+            "Evaluation mode: "
+            "pairwise-baseline=compare against a baseline; "
+            "pairwise-all=compare all model pairs; "
+            "single=score individual answers."
         ),
     )
 
-    # model-list 使用 nargs='+'，因此命令行中可传多个模型名。
-    parser.add_argument("--model-list", type=str, default=["vicuna-7b_Self-Exam"], nargs="+", help="待评模型列表。")
-    parser.add_argument("--model-id", type=str, default="vicuna-7b_Self-Exam", help="输出文件中的模型标识。")
+    # model-list uses nargs='+', allowing multiple model names on the command line.
+    parser.add_argument("--model-list", type=str, default=["vicuna-7b_Self-Exam"], nargs="+", help="Models to evaluate.")
+    parser.add_argument("--model-id", type=str, default="vicuna-7b_Self-Exam", help="Model identifier in the output file.")
 
-    # 执行控制参数
-    parser.add_argument("--parallel", type=int, default=1, help="并发 API 调用数量。")
-    parser.add_argument("--first-n", type=int, default=80, help="调试参数：仅评测前 n 个问题。")
+    # Execution control parameters.
+    parser.add_argument("--parallel", type=int, default=1, help="Number of concurrent API calls.")
+    parser.add_argument("--first-n", type=int, default=80, help="Debug option: evaluate only the first n questions.")
 
     args = parser.parse_args()
 
-    # 路径变量类型：str
+    # Path variables are strings.
     question_file = f"data/{args.bench_name}/question.jsonl"
     answer_dir = f"data/{args.bench_name}/model_answer"
     ref_answer_dir = f"data/{args.bench_name}/reference_answer"
@@ -325,7 +297,7 @@ if __name__ == "__main__":
     model_answers = load_model_answers(answer_dir)
     ref_answers = load_model_answers(ref_answer_dir)
 
-    # judge_prompts：Dict[str, Dict]（键为模板名）
+    # Judge prompt templates keyed by template name.
     judge_prompts = load_judge_prompts(args.judge_file)
 
     if args.first_n:
@@ -337,11 +309,11 @@ if __name__ == "__main__":
     else:
         models = args.model_list
 
-    # 根据 mode 决定：
-    # 1) judge 构建函数
-    # 2) match 执行函数
-    # 3) 输出文件后缀
-    # 4) 基线模型是否启用
+    # Select the following according to mode:
+    # 1) judge-construction function
+    # 2) match-execution function
+    # 3) output-file suffix
+    # 4) whether a baseline model is used
     if args.mode == "single":
         judges = make_judge_single(args.judge_model, judge_prompts)
         play_a_match_func = play_a_match_single
@@ -360,19 +332,17 @@ if __name__ == "__main__":
             make_match_func = make_match
             baseline_model = args.baseline_model
 
-    # 数据一致性检查：确认题目、模型答案、参考答案、评审器可对应。
+    # Verify that questions, answers, references, and judges are compatible.
     check_data(questions, model_answers, ref_answers, models, judges)
 
-    # 按题目类别分为：
-    # - question_math：需要参考答案的类别（NEED_REF_CATS）
-    # - question_default：其他类别
+    # Split questions into reference-answer categories and other categories.
     question_math = [q for q in questions if q["category"] in NEED_REF_CATS]
     question_default = [q for q in questions if q["category"] not in NEED_REF_CATS]
 
-    # matches：List[MatchSingle] 或 List[MatchPair]（取决于 mode）
+    # List[MatchSingle] or List[MatchPair], depending on mode.
     matches = []
 
-    # 单轮普通题
+    # Single-turn general questions.
     matches += make_match_func(
         question_default,
         models,
@@ -381,7 +351,7 @@ if __name__ == "__main__":
         baseline_model,
     )
 
-    # 单轮数学/参考题
+    # Single-turn math or reference-answer questions.
     matches += make_match_func(
         question_math,
         models,
@@ -391,7 +361,7 @@ if __name__ == "__main__":
         ref_answers,
     )
 
-    # 多轮普通题（仅处理 turn 数为 2 的问题）
+    # Multi-turn general questions; process only questions with two turns.
     matches += make_match_func(
         question_default,
         models,
@@ -401,7 +371,7 @@ if __name__ == "__main__":
         multi_turn=True,
     )
 
-    # 多轮数学/参考题
+    # Multi-turn math or reference-answer questions.
     matches += make_match_func(
         question_math,
         models,
@@ -412,7 +382,7 @@ if __name__ == "__main__":
         multi_turn=True,
     )
 
-    # match_stat：Dict[str, Any]，用于打印执行概览。
+    # Execution summary for logging.
     match_stat = {}
     match_stat["bench_name"] = args.bench_name
     match_stat["mode"] = args.mode
@@ -426,9 +396,7 @@ if __name__ == "__main__":
     print("Stats:")
     print(json.dumps(match_stat, indent=4))
 
-    # 执行评审：
-    # - parallel=1：串行
-    # - parallel>1：线程池并行
+    # Run judgments serially when parallel=1 and with a thread pool otherwise.
     if args.parallel == 1:
         for match in tqdm(matches):
             play_a_match_func(match, output_file=output_file)
@@ -436,7 +404,7 @@ if __name__ == "__main__":
         def play_a_match_wrapper(match):
             play_a_match_func(match, output_file=output_file)
 
-        # 固定随机种子后打乱任务顺序，减小并发热点。
+        # Shuffle after fixing the seed to reduce concurrent request hotspots.
         np.random.seed(0)
         np.random.shuffle(matches)
 
